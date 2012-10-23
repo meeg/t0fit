@@ -73,6 +73,7 @@ int AnalyticFitter::doAnalyticFit(int start, int end, double &time, double &time
 
 	time = (pa*aatt-pat*aat)/(pa*aat-aa*pat);
 	height = pa/(exp(time/shapingTime)*(aat-time*aa));
+
 	double time_var = 0;
 	double height_var = 0;
 	covar = 0;
@@ -89,6 +90,23 @@ int AnalyticFitter::doAnalyticFit(int start, int end, double &time, double &time
 	time_err = sqrt(time_var);
 	height_err = sqrt(height_var);
 
+	if (height < 0) {
+		//return -1;
+		//time = t[0] - shapingTime;
+		//height = y[k[0]];
+		time = -100;
+		height = y[k[0]]/shape->getHeight(t[0]-time);
+		if (height > 2) {
+			printf("Negative height\n");
+			/*
+	for (i=0;i<length;i++)
+	{
+		printf("%f, %f\n",t[i],y[k[i]]);
+	}
+	printf("start %d, end %d, time %f, time_err %f, height %f, height_err %f\n",start, end, time, time_err, height, height_err);
+	*/
+	}
+}
 	if (verbose>2) printf("start %d, end %d, time %f, time_err %f, height %f, height_err %f\n",start, end, time, time_err, height, height_err);
 	
 	free(a);
@@ -269,7 +287,7 @@ void AnalyticFitter::mergeSections()
 
 }
 
-void AnalyticFitter::plotFit(Event *evt, char *name)
+void AnalyticFitter::plotFit(Event *evt, const char *name)
 {
 	currentFitter = this;
 	double *t, *h;

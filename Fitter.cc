@@ -107,6 +107,10 @@ double Fitter::getChisq(double *par, bool use_all)
 	return chisq;
 }
 
+void Fitter::setUseSample(int i, bool use) {
+	useSample[i] = use;
+}
+
 int Fitter::getNumUsedSamples(int start, int end)
 {
 	int i;

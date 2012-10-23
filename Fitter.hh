@@ -44,14 +44,15 @@ class Fitter : public TObject
 		double getSignal(double time);
 		void setSigmaNoise(double sigma);
 		double getFirstPeak();
-		void setUsedSamples();
+		//void setUsedSamples();
 
 		void sortFit();
+		void setUseSample(int i, bool use);
 		int getNumUsedSamples(int start=0, int end=-1);
 
 		virtual void doFit() {}
-		virtual void plotFit(Event *evt, char *name) {}
-		virtual void plotFCN(Event *evt, char *name, int res, char *style, double x_min, double x_max, double y_min, double y_max) {}
+		virtual void plotFit(Event *evt, const char *name) =0;
+		virtual void plotFCN(Event *evt, const char *name, int res, const char *style, double x_min, double x_max, double y_min, double y_max) {}
 		virtual void print_guess() {}
 		virtual double guessChisq() { return -1;}
 };

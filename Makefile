@@ -1,5 +1,5 @@
 CPP = g++
-
+ROOTSYS = /usr
 CPPFLAGS = -g -I$(ROOTSYS)/include -I$(ROOTSYS)/include/root
 CXXFLAGS =
 

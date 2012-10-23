@@ -30,6 +30,7 @@ class MinuitFitter : public Fitter
 		void setGuess(int i, double time, double height);
 		void print_guess();
 		double guessChisq();
+		void plotFit(Event *evt, const char *name) {}
 };
 
 void FCN(Int_t&npar, Double_t*gin, Double_t&f, Double_t*par, Int_t flag);

@@ -8,6 +8,9 @@
 #include "TH2F.h"
 #include "TStyle.h"
 #include <math.h>
+#include <algorithm>
+#include <cmath>
+using namespace std;
 
 
 LinFitter::LinFitter(ShapingCurve *sc, int sCount, int pCount, double noise) : Fitter(sc, sCount, pCount, noise)
@@ -18,10 +21,17 @@ LinFitter::LinFitter(ShapingCurve *sc, int sCount, int pCount, double noise) : F
 	a_vec = gsl_vector_alloc(pCount);
 	fit_t = (double *) calloc(pCount, sizeof(double));
 	fit_t_err = (double *) calloc(pCount, sizeof(double));
+	ework = gsl_eigen_symmv_alloc(nPeaks);
+	hess_mat = gsl_matrix_alloc(nPeaks,nPeaks);
+	evec = gsl_matrix_alloc(nPeaks,nPeaks);
+	proj_mat = gsl_matrix_alloc(nPeaks,nPeaks);
+	eval = gsl_vector_alloc(nPeaks);
+	grad = gsl_vector_alloc(nPeaks);
+	eig_mat = gsl_matrix_alloc(nPeaks,nPeaks);
 	/*
-	v = 
-	TensorProd(v,v);
-	*/
+	   v = 
+	   TensorProd(v,v);
+	   */
 }
 
 LinFitter::~LinFitter()
@@ -31,6 +41,14 @@ LinFitter::~LinFitter()
 	gsl_vector_free(a_vec);
 	free(fit_t);
 	free(fit_t_err);
+}
+
+void LinFitter::doFit()
+{
+	//doGridFit();
+	//doMinuitFit();
+	//doRecursiveFit();
+	doScanFit();
 }
 
 double LinFitter::doLinFit(double *times, double *par)
@@ -79,6 +97,7 @@ double LinFitter::doLinFit(double *times, double *par)
 		//	printf("\n");
 		gsl_vector_set_zero(a_vec); //set all peak heights to 0
 	}
+	//gsl_vector_set(a_vec,gsl_vector_min_index(a_vec),0.0);
 	if (par!=NULL) for (i=0;i<nPeaks;i++) //fill par with fitted values
 	{
 		par[2*i] = times[i];
@@ -96,7 +115,7 @@ void LinFitter::initMinuit()
 {
 	currentFitter = this;
 	gMinuit->SetFCN(LinFCN);
-	//gMinuit->SetPrintLevel(-1);
+	gMinuit->SetPrintLevel(verbose);
 	gMinuit->Command("CLE");
 
 	gMinuit->Command("SET NOW");
@@ -107,19 +126,61 @@ void LinFitter::initMinuit()
 
 void LinFitter::doMinuitFit()
 {
-	doGridFit();
+	//makeGuess();
+	for (int j=0;j<nPeaks;j++)
+	{
+		guess_t[j] = sampleInterval*(j);
+	}
+	//doGridFit(2);
 	initMinuit();
-	double arglist[10];
-	int ierflg = 0;
 	int i;
 	for (i=0; i<nPeaks; i++)
 	{
-		gMinuit->DefineParameter(i,"time",guess_t[i],25.0,-200.0,120.0);
+		gMinuit->DefineParameter(i,"time",guess_t[i],25.0,0,0);
 	}
 
 	arglist[0] = 1000;
+	//gMinuit->mnexcm("MIGRAD", arglist ,1,ierflg);
 	gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+	//gMinuit->mnexcm("MINIMIZE", arglist ,1,ierflg);
+
 	status = ierflg;
+	if (nPeaks==2) {
+		double new_fval;
+		double *init_par = new double[nPeaks];
+		double *best_par = new double[nPeaks];
+		getPar(init_par);
+		double best_fval = doLinFit(init_par);
+		if (verbose > 0)
+			printf("Before valley: chisq %f\n",best_fval);
+		memcpy(best_par,init_par,nPeaks*sizeof(double));
+
+		double *move = new double[nPeaks];
+		move[0] = 1.0;
+		for (int i=1;i<nPeaks;i++) move[i] = 0.0;
+		new_fval = valleyImprove(move);
+		if (verbose > 0)
+			printf("Valley right: new chisq %f\n",new_fval);
+		if (new_fval < best_fval) {
+			best_fval = new_fval;
+			getPar(best_par);
+		}
+
+		setPar(init_par);
+		move[0] = -1.0;
+		for (int i=1;i<nPeaks;i++) move[i] = 0.0;
+		new_fval = valleyImprove(move);
+		if (verbose > 0)
+			printf("Valley left: new chisq %f\n",new_fval);
+		if (new_fval < best_fval) {
+			best_fval = new_fval;
+			getPar(best_par);
+		}
+		setPar(best_par);
+		arglist[0] = 1000;
+		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+		status = ierflg;
+	}
 	if (status == 0)
 	{
 		arglist[0] = 1000;
@@ -130,6 +191,86 @@ void LinFitter::doMinuitFit()
 		gMinuit->GetParameter(i,fit_t[i],fit_t_err[i]);
 	}
 
+	doLinFit(fit_t,fit_par);
+}
+
+void LinFitter::doRecursiveFit()
+{
+	if (nPeaks==1) {
+		doGridFit(2);
+		lineScan(0,fit_t[0],5.0);
+		//doMinuitFit();
+		return;
+	}
+
+	double *best_times = NULL;
+	//double *times = new double[nPeaks];
+	double best_fval, fval;
+
+	LinFitter *fitter1 = new LinFitter(shape,nSamples,1,sigma_noise);
+	LinFitter *fitter2 = new LinFitter(shape,nSamples,nPeaks-1,sigma_noise);
+	fitter1->setVerbosity(verbose);
+	fitter2->setVerbosity(verbose);
+	Samples *mySamples = new Samples(6,24.0);
+	mySamples->readEvent(y,startTime);
+	fitter1->readSamples(mySamples);
+	for (int split=0;split<nSamples;split++) {
+		for (int i=0;i<nSamples;i++) {
+			fitter1->setUseSample(i,i<=split);
+		}
+		fitter1->doRecursiveFit();
+		fitter1->getFitTimes(fit_t);
+		double *y_sub = new double[nSamples];
+		for (int i=0;i<nSamples;i++) {
+			y_sub[i] = y[i]-fitter1->getSignal(startTime+i*sampleInterval);
+		}
+		mySamples->readEvent(y_sub,startTime);
+		fitter2->readSamples(mySamples);
+		for (int i=0;i<nSamples;i++) {
+			fitter2->setUseSample(i,true);
+		}
+		fitter2->doRecursiveFit();
+		fitter2->getFitTimes(fit_t+1);
+
+		/*
+		initMinuit();
+		for (int i=0; i<nPeaks; i++)
+		{
+			gMinuit->DefineParameter(i,"time",fit_t[i],25.0,0,0);
+		}
+		arglist[0] = 1000;
+		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+		getPar(fit_t);
+		*/
+
+		fval = doLinFit(fit_t);
+		if (verbose>1) {
+			printf("%d, %f\n",split,fval);
+			for (int i=0; i<nPeaks; i++) printf("%f\t",fit_t[i]);
+			printf("\n");
+		}
+
+		if (best_times == NULL) {
+			best_fval = fval;
+			best_times = new double[nPeaks];
+			memcpy(best_times,fit_t,nPeaks*sizeof(double));
+		} else if (fval<best_fval) {
+			best_fval = fval;
+			memcpy(best_times,fit_t,nPeaks*sizeof(double));
+		}
+	}
+
+	memcpy(fit_t,best_times,nPeaks*sizeof(double));
+	/*
+		initMinuit();
+		for (int i=0; i<nPeaks; i++)
+		{
+			gMinuit->DefineParameter(i,"time",fit_t[i],25.0,0,0);
+		}
+		arglist[0] = 1000;
+		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+		getPar(fit_t);
+		*/
 	doLinFit(fit_t,fit_par);
 }
 
@@ -261,9 +402,8 @@ void LinFitter::makeGuess()
 
 void LinFitter::print_guess()
 {
-	int i;
 	printf("Times:\t\t");
-	for (i=0;i<nPeaks;i++)
+	for (int i=0;i<nPeaks;i++)
 		printf("%lf\t",guess_t[i]);
 	printf("\n");
 }
@@ -276,8 +416,8 @@ void LinFitter::setVerbosity(int verbosity)
 
 double LinFitter::Evaluate(double *x, double *p)
 {
-	//return sqrt(doLinFit(x, NULL));
-	return doLinFit(x, NULL);
+	//return sqrt(doLinFit(x));
+	return doLinFit(x);
 }
 
 void LinFitter::plotFCN(Event *evt, const char *name, int res, const char *style, double x_min, double x_max, double y_min, double y_max)
@@ -328,7 +468,128 @@ void LinFitter::plotFCN(Event *evt, const char *name, int res, const char *style
 	free(t2);
 }
 
-void LinFitter::doGridFit()
+void LinFitter::lineScan(int i, double start, double step) {
+	fit_t[i] = start;
+	double fval, old_fval;
+	bool success, old_success;
+	int k=0;
+
+	fval = doLinFit(fit_t);
+	success = false;
+
+	while (k<1000) {
+		old_fval = fval;
+		fit_t[i]+=step;
+		fval = doLinFit(fit_t);
+		old_success = success;
+		success = fval<=old_fval;
+		if (success) {
+			step *= 3.0;
+		} else {
+			fit_t[i]-=step;
+			if (old_success && fval-old_fval < 0.01 && fval!=old_fval) return;
+			fval = doLinFit(fit_t);
+			step *= -0.4;
+			//if (old_success) return;
+		}
+		k++;
+	}
+}
+
+void LinFitter::doScanFit()
+{
+	double *best_t = NULL;
+	double best_fval, fval;
+
+	initMinuit();
+	for (int i=0; i<nPeaks; i++)
+	{
+		gMinuit->DefineParameter(i,"time",fit_t[i],5.0,0,0);
+	}
+
+	if (nPeaks==1) {
+		lineScan(0, 0.0, 5.0);
+		setPar(fit_t);
+	}
+
+	if (nPeaks==2) {
+		double *move = new double[nPeaks];
+
+		fit_t[0] = 110.0;
+		lineScan(1, 0.0, 5.0);
+
+		if (verbose>0) {
+			printf("Times:\t\t");
+			for (int i=0;i<nPeaks;i++)
+				printf("%lf\t",fit_t[i]);
+			printf("\n");
+		}
+
+		/*
+		   setPar(fit_t);
+		   arglist[0] = 1000;
+		   gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+		   getPar(fit_t);
+		   fval = doLinFit(fit_t);
+		   */
+
+		move[0] = -1.0;
+		for (int i=1;i<nPeaks;i++) move[i] = 0.0;
+		setPar(fit_t);
+		fval = valleyImprove(move);
+		getPar(fit_t);
+
+		if (best_t == NULL) {
+			best_fval = fval;
+			best_t = new double[nPeaks];
+			memcpy(best_t,fit_t,nPeaks*sizeof(double));
+		} else if (fval<best_fval) {
+			best_fval = fval;
+			memcpy(best_t,fit_t,nPeaks*sizeof(double));
+		}
+		fit_t[0] = -200.0;
+		lineScan(1, 0.0, 5.0);
+
+		if (verbose>0) {
+			printf("Times:\t\t");
+			for (int i=0;i<nPeaks;i++)
+				printf("%lf\t",fit_t[i]);
+			printf("\n");
+		}
+
+		/*
+		   setPar(fit_t);
+		   arglist[0] = 1000;
+		   gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+		   getPar(fit_t);
+		   fval = doLinFit(fit_t);
+		   */
+
+		move[0] = 1.0;
+		for (int i=1;i<nPeaks;i++) move[i] = 0.0;
+		setPar(fit_t);
+		fval = valleyImprove(move);
+		getPar(fit_t);
+
+		if (best_t == NULL) {
+			best_fval = fval;
+			best_t = new double[nPeaks];
+			memcpy(best_t,fit_t,nPeaks*sizeof(double));
+		} else if (fval<best_fval) {
+			best_fval = fval;
+			memcpy(best_t,fit_t,nPeaks*sizeof(double));
+		}
+
+		setPar(best_t);
+	}
+
+	arglist[0] = 1000;
+	gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+	getPar(fit_t);
+	doLinFit(fit_t,fit_par);
+}
+
+void LinFitter::doGridFit(int nIterations)
 {
 	double gridStep = 8.0;
 	//double scanStep = 2.0;
@@ -344,7 +605,7 @@ void LinFitter::doGridFit()
 	}
 
 	best_chisq=-1;
-	for (j=0;j<7;j++)
+	for (j=0;j<nIterations;j++)
 	{
 		for (i=0;i<nPeaks;i++)
 		{
@@ -369,6 +630,7 @@ void LinFitter::doGridFit()
 				guess_t[i] = guess_t[i+1]<max[i] ? guess_t[i+1] : max[i];
 			}
 			chisq = doLinFit(guess_t);
+			//printf("chisq %f: time %f\n",chisq,guess_t[0]);
 			if (best_chisq<0 || chisq<best_chisq)
 			{
 				best_chisq = chisq;
@@ -389,38 +651,38 @@ void LinFitter::doGridFit()
 		}
 		if (last_chisq!=-1 && last_chisq!=best_chisq && last_chisq-best_chisq<0.01) break;
 		/*
-		if (nPeaks>1)
+		   if (nPeaks>1)
+		   {
+		   for (i=0;i<nPeaks;i++)
+		   {
+		   guess_t[i] = fit_t[i];
+		   }
+		   max[1] = fit_t[1]+gridStep;
+		   guess_t[1] = fit_t[1]-gridStep;
+		   while (guess_t[1]<max[1])
+		   {
+		   guess_t[1]+=gridStep/8;
+		   chisq = doLinFit(guess_t);
+		//printf("guess chisq: %f\n",chisq);
+		if (best_chisq<0 || chisq<best_chisq)
 		{
-			for (i=0;i<nPeaks;i++)
-			{
-				guess_t[i] = fit_t[i];
-			}
-			max[1] = fit_t[1]+gridStep;
-			guess_t[1] = fit_t[1]-gridStep;
-			while (guess_t[1]<max[1])
-			{
-				guess_t[1]+=gridStep/8;
-				chisq = doLinFit(guess_t);
-				//printf("guess chisq: %f\n",chisq);
-				if (best_chisq<0 || chisq<best_chisq)
-				{
-					best_chisq = chisq;
-					fit_t[1] = guess_t[1];
-				}
-			}
-			guess_t[1] = fit_t[1];
-			guess_t[0] = min[0];
-			while (guess_t[0]<guess_t[1])
-			{
-				guess_t[0]+=scanStep;
-				chisq = doLinFit(guess_t);
-				//printf("guess chisq: %f\n",chisq);
-				if (best_chisq<0 || chisq<best_chisq)
-				{
-					best_chisq = chisq;
-					fit_t[0] = guess_t[0];
-				}
-			}
+		best_chisq = chisq;
+		fit_t[1] = guess_t[1];
+		}
+		}
+		guess_t[1] = fit_t[1];
+		guess_t[0] = min[0];
+		while (guess_t[0]<guess_t[1])
+		{
+		guess_t[0]+=scanStep;
+		chisq = doLinFit(guess_t);
+		//printf("guess chisq: %f\n",chisq);
+		if (best_chisq<0 || chisq<best_chisq)
+		{
+		best_chisq = chisq;
+		fit_t[0] = guess_t[0];
+		}
+		}
 		}
 		*/
 		for (i=0;i<nPeaks;i++)
@@ -441,45 +703,219 @@ void LinFitter::doGridFit()
 	free(max);
 }
 
-void LinFitter::doFit()
+double LinFitter::valleyImprove(double *move)
 {
-	doGridFit();
-}
+	double *best_par = new double[nPeaks];
+	double best_fval;
 
-void LinFCN(Int_t&npar, Double_t*gin, Double_t&f, Double_t*par, Int_t flag)
-{
-	LinFitter *theFitter = (LinFitter *)currentFitter;
-	switch(flag)
-	{
-		case 1:
-			// Initialization
+	getPar(best_par);
+
+	double init_fval = doLinFit(best_par);
+	best_fval = init_fval;
+
+	double old_fval = init_fval;
+	double step = 1.0;
+	int k = 0;
+	while(true) {
+		double new_fval = valleyStep(move, step, 0.0);
+		if (new_fval<best_fval) {
+			//printf("New best: %f\n",new_fval);
+			best_fval = new_fval;
+			getPar(best_par);
+			//printf("Best par:\t");
+			//for (int i=0;i<nPeaks;i++)
+			//	printf("%f\t",best_par[i]);
+			//printf("\n");
+		}
+
+		//if (new_fval > old_fval + 0.1 || new_fval>init_fval + 10) {
+		if (new_fval>init_fval + 10) {
+			if (verbose > 0)
+				printf("%d valley steps\n",k);
 			break;
-		case 2:
-			//	theFitter->memberGradFCN(par,gin);
-			// Compute derivatives
-			// store them in gin
+		}
+		old_fval = new_fval;
+		if (++k>1000) {
+			if (verbose > 0)
+				printf("%d valley steps\n",k);
 			break;
-		case 3:
-			// after the fit is finished
-			break;
-		default:
-			f = theFitter->doLinFit(par,NULL);
-			break;
+		}
 	}
-}
 
-Double_t LinFCNCurve(Double_t *x, Double_t *par)
-{
-	LinFitter *theFitter = (LinFitter *)currentFitter;
-	int i, n;
-	n = theFitter->getNumPeaks();
-	double *newpar = (double *) calloc(n, sizeof(double));
-	int k = (int)par[n];
-	for (i=0;i<n;i++)
-		newpar[i] = par[i];
-	newpar[k] = x[0];
-	double y = theFitter->doLinFit(newpar,NULL);
-	free(newpar);
-	return y;
-}
+	/*
+	   setPar(best_par);
+	   arglist[0] = 1000;
+	   gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+	   getPar(best_par);
+	   */
 
+	setPar(best_par);
+	return doLinFit(best_par);
+	}
+
+	double LinFitter::valleyStep(double *dir, double &step, double mindot)
+	{
+		arglist[0] = 1000;
+		gMinuit->mnexcm("HESSE", arglist ,1,ierflg);
+		int maxPar = gMinuit->fMaxpar;
+
+		for (int i = 0;i<nPeaks;i++) {
+			for (int j = 0;j<nPeaks;j++) {
+				gsl_matrix_set(hess_mat,i,j,gMinuit->fP[i+j*maxPar]);
+				if (verbose>1) printf("%f\t",gMinuit->fP[i+j*maxPar]);
+			}
+			gsl_vector_set(grad,i,gMinuit->fGrd[i]);
+			if (verbose>1) printf("\t%f\n",gMinuit->fGrd[i]);
+		}
+
+		//gsl_matrix_set_identity(proj_mat);
+		//gsl_matrix_set_zero(eig_mat);
+		//gsl_blas_dsyr(CblasLower,1.0/gsl_blas_dnrm2(grad),grad,proj_mat);
+
+		//gsl_blas_dsymm(CblasLeft,CblasLower,1.0,proj_mat,hess_mat,0.0,eig_mat);
+
+		//gsl_eigen_symmv(eig_mat,eval,evec,ework);
+		gsl_eigen_symmv(hess_mat,eval,evec,ework);
+		gsl_eigen_symmv_sort(eval,evec,GSL_EIGEN_SORT_VAL_ASC);
+		/*
+		   printf("Eigenvalues:\n");
+		   gsl_vector_fprintf(stdout,eval,"%f");
+		   printf("Eigenvectors:\n");
+		   gsl_matrix_fprintf(stdout,evec,"%f");
+		   */
+		gsl_vector_view evec0 = gsl_matrix_column(evec, 0);
+		gsl_vector_view evec1 = gsl_matrix_column(evec, 1);
+
+		double *move = evec0.vector.data;
+		double *correct = evec1.vector.data;
+
+		double dotproduct = 0;
+		for (int i=0;i<nPeaks;i++) dotproduct+=move[i]*dir[i];
+
+		/*
+		   if (abs(dotproduct) < mindot) {
+		   return valleyStep(dir,step/2,mindot);
+		   }
+		   */
+
+		if (verbose > 1) {
+			printf("dot: %f\n",dotproduct);
+		}
+
+		if (dotproduct<0) {
+			for (int i=0;i<nPeaks;i++) move[i]*=-1;
+		}
+
+		/*
+		   if (abs(dotproduct) > 0.95) {
+		   step = min(2*step,5.0);
+		   } else {
+		   step = max(0.5*step,1.0);
+		   }
+		   */
+
+		memcpy(dir,move,nPeaks*sizeof(double));
+
+		double *par = new double[nPeaks];
+		getPar(par);
+
+		if (verbose > 1) {
+			printf("old par:\t");
+			for (int i=0;i<nPeaks;i++)
+				printf("%f\t",par[i]);
+			printf("\n");
+			printf("step:\t");
+			for (int i=0;i<nPeaks;i++)
+				printf("%f\t",step*move[i]);
+			printf("\n");
+		}
+
+		for (int i=0;i<nPeaks;i++) {
+			//	if (par[i]<-150.0) return 100000;
+			par[i]+=step*move[i];
+		}
+		setPar(par);
+
+		if (verbose > 1) {
+			printf("stepped par:\t");
+			for (int i=0;i<nPeaks;i++)
+				printf("%f\t",par[i]);
+			printf("\n");
+		}
+
+		gMinuit->mnhes1();
+		double slope = 0;
+		for (int i=0;i<nPeaks;i++) slope+=correct[i]*gMinuit->fGrd[i];
+		if (slope > 0) {
+			slope*=-1;
+			for (int i=0;i<nPeaks;i++) correct[i]*=-1;
+		}
+		double fval = doLinFit(par);
+		gMinuit->mnline(par,fval,correct,slope,0.05);
+
+		if (verbose > 1) {
+			getPar(par);
+			printf("mnline par:\t");
+			for (int i=0;i<nPeaks;i++)
+				printf("%f\t",par[i]);
+			printf("\n");
+		}
+
+		return fval;
+	}
+
+	void LinFitter::getPar(double *par) {
+		double dummy;
+		for (int i=0; i<nPeaks; i++) gMinuit->GetParameter(i,par[i],dummy);
+	}
+
+	void LinFitter::setPar(double *par) {
+		for (int i=0; i<nPeaks; i++) {
+			arglist[0] = i+1;
+			arglist[1] = par[i];
+			gMinuit->mnexcm("SET PARAM",arglist,2,ierflg);
+		}
+	}
+
+	void LinFCN(Int_t&npar, Double_t*gin, Double_t&f, Double_t*par, Int_t flag)
+	{
+		LinFitter *theFitter = (LinFitter *)currentFitter;
+		switch(flag)
+		{
+			case 1:
+				// Initialization
+				break;
+			case 2:
+				//	theFitter->memberGradFCN(par,gin);
+				// Compute derivatives
+				// store them in gin
+				break;
+			case 3:
+				// after the fit is finished
+				break;
+			default:
+				/*
+				   for (int i=0;i<npar;i++) if (par[i]<-200.0) {
+				   f = 10000000000.0;
+				   return;
+				   }
+				   */
+				f = theFitter->doLinFit(par,NULL);
+				break;
+		}
+	}
+
+	Double_t LinFCNCurve(Double_t *x, Double_t *par)
+	{
+		LinFitter *theFitter = (LinFitter *)currentFitter;
+		int i, n;
+		n = theFitter->getNumPeaks();
+		double *newpar = (double *) calloc(n, sizeof(double));
+		int k = (int)par[n];
+		for (i=0;i<n;i++)
+			newpar[i] = par[i];
+		newpar[k] = x[0];
+		double y = theFitter->doLinFit(newpar,NULL);
+		free(newpar);
+		return y;
+	}

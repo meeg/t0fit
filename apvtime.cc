@@ -25,15 +25,21 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 	int fitterType = 3;
 	int nPeaks = 1;
 	int nEvents = 100;
+	uint seed = 0;
+	bool makePlots = false;
+	bool reFit = false;
 
-	while ((c = getopt(argc,argv,"hf:n:p:")) !=-1)
+	while ((c = getopt(argc,argv,"hf:n:p:s:Pr")) !=-1)
 		switch (c)
 		{
 			case 'h':
 				printf("-h: print this help\n");
-				printf("-f: fitter type\n");
+				printf("-f: fitter type (1 = minuit, 2 = linear, 3 = analytic\n");
 				printf("-n: number of events\n");
 				printf("-p: number of peaks per event\n");
+				printf("-P: make plots\n");
+				printf("-r: refit on failure\n");
+				printf("-s: RNG seed\n");
 				return(0);
 				break;
 			case 'f':
@@ -44,6 +50,15 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 				break;
 			case 'p':
 				nPeaks = atoi(optarg);
+				break;
+			case 's':
+				seed = atoi(optarg);
+				break;
+			case 'P':
+				makePlots = true;
+				break;
+			case 'r':
+				reFit = true;
 				break;
 			case '?':
 				printf("Invalid option or missing option argument; -h to list options\n");
@@ -61,6 +76,7 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 
 	T = gsl_rng_mt19937;
 	r = gsl_rng_alloc (T);
+	gsl_rng_set(r,seed);
 
 
 	ShapingCurve *myShape = new ShapingCurve(35.0);
@@ -194,6 +210,10 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 
 		fit_chisq = myFitter->getChisq(fit_par);
 		true_chisq = myFitter->getChisq(true_par);
+		if (nPeaks>1)
+		{
+			true_chisq = myFitter2->getChisq(true_par);
+		}
 		prob = TMath::Prob(fit_chisq,dof);
 
 		status2 = myFitter2->getStatus();
@@ -240,8 +260,7 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 			printf("Fitted params:\n");
 			myFitter->print_fit();
 			myFitter2->print_fit();
-
-			if (fitterType==1)
+			if (makePlots && fitterType==1)
 			{
 				//MinuitFitter-specific
 				printf("Guessed params (chisq %lf):\n",myFitter->guessChisq());
@@ -250,7 +269,7 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 				myFitter2->print_guess();
 			}
 
-			if (fitterType==2)
+			if (makePlots && fitterType==2)
 			{
 				//LinFitter-specific
 				sprintf(name,"fit_%06d_fcn.png",event);
@@ -261,19 +280,27 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 				myFitter2->plotFCN(myEvent,name,100,"cont1z",true_par[0]-5.0,true_par[0]+5.0,true_par[2]-5.0,true_par[2]+5.0);
 			}
 
-			/*
-			   sprintf(name,"fit_%06d.png",event);
-			   myFitter->plotFit(myEvent,name);
-			   sprintf(name,"fit_%06d_2.png",event);
-			   myFitter2->plotFit(myEvent,name);
+			if (reFit) {
+				myFitter->setVerbosity(1);
+				myFitter2->setVerbosity(2);
+				myFitter->doFit();
+				myFitter2->doFit();
+				myFitter->setVerbosity(-1);
+				myFitter2->setVerbosity(-1);
+				/*
+				   sprintf(name,"fit_%06d.png",event);
+				   myFitter->plotFit(myEvent,name);
+				   sprintf(name,"fit_%06d_2.png",event);
+				   myFitter2->plotFit(myEvent,name);
 
-			   myFitter->setVerbosity(3);
-			   myFitter2->setVerbosity(3);
-			   myFitter->doFit();
-			   myFitter2->doFit();
-			   myFitter->setVerbosity(0);
-			   myFitter2->setVerbosity(0);
-			   */
+				   myFitter->setVerbosity(3);
+				   myFitter2->setVerbosity(3);
+				   myFitter->doFit();
+				   myFitter2->doFit();
+				   myFitter->setVerbosity(0);
+				   myFitter2->setVerbosity(0);
+				   */
+			}
 		}
 
 		/*

@@ -18,7 +18,7 @@ class AnalyticFitter : public Fitter
 		void mergeSections(); //takes the section fits and subtracts pileup
 		void doFitSingle(); //fits to a single peak (deprecated)
 		void doFit(); //fits multiple peaks
-		void plotFit(Event *evt,char *name);
+		void plotFit(Event *evt, const char *name);
 };
 
 #endif
