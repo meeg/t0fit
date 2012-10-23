@@ -25,7 +25,7 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 	int fitterType = 3;
 	int nPeaks = 1;
 	int nEvents = 100;
-	uint seed = 0;
+	unsigned int seed = 0;
 	bool makePlots = false;
 	bool reFit = false;
 
