@@ -28,8 +28,9 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 	uint seed = 0;
 	bool makePlots = false;
 	bool reFit = false;
+	bool verbose = false;
 
-	while ((c = getopt(argc,argv,"hf:n:p:s:Pr")) !=-1)
+	while ((c = getopt(argc,argv,"hf:n:p:s:Prv")) !=-1)
 		switch (c)
 		{
 			case 'h':
@@ -40,6 +41,7 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 				printf("-P: make plots\n");
 				printf("-r: refit on failure\n");
 				printf("-s: RNG seed\n");
+				printf("-v: verbose\n");
 				return(0);
 				break;
 			case 'f':
@@ -59,6 +61,9 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 				break;
 			case 'r':
 				reFit = true;
+				break;
+			case 'v':
+				verbose = true;
 				break;
 			case '?':
 				printf("Invalid option or missing option argument; -h to list options\n");
@@ -98,8 +103,13 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 			break;
 	}
 
+	if (verbose) {
+	myFitter->setVerbosity(2);
+	myFitter2->setVerbosity(2);
+	} else {
 	myFitter->setVerbosity(-1);
 	myFitter2->setVerbosity(-1);
+	}
 	Event *myEvent = new Event(myShape,r,1.0);
 
 	Samples *mySamples = new Samples(6,24.0);
@@ -163,11 +173,14 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 
 	for (event=0;event<nEvents;event++)
 	{
-		//printf("event %d\n",event);
-		gsl_rng_set (r,event); //seed = event
+		if (verbose) {
+			printf("event %d\n",event);
+		}
+		gsl_rng_set (r,event+seed); //seed = event
 
 
-		time = gsl_ran_flat(r, 24.0, 48.0);
+		time = gsl_ran_flat(r, 48.0, 90.0);
+		//time = gsl_ran_flat(r, 48.0, 72.0);
 		//time = gsl_ran_flat(r, -0.0, 90.0);
 		height = 25.0;
 		myEvent->addHit(time,height);
@@ -190,9 +203,21 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 		myEvent->getHeights(heights);
 		mySamples->readEvent(myEvent, 0.0);
 
-
 		myFitter->readSamples(mySamples);
 		myFitter2->readSamples(mySamples);
+
+		true_chisq = myFitter->getChisq(true_par);
+		if (nPeaks>1)
+		{
+			true_chisq = myFitter2->getChisq(true_par);
+		}
+
+		if (verbose) {
+			printf("True params (chisq %lf), samples:\n",true_chisq);
+			myEvent->print();
+			mySamples->print();
+		}
+
 
 
 
@@ -209,11 +234,6 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 		myFitter->getFitHeights(fit_heights);
 
 		fit_chisq = myFitter->getChisq(fit_par);
-		true_chisq = myFitter->getChisq(true_par);
-		if (nPeaks>1)
-		{
-			true_chisq = myFitter2->getChisq(true_par);
-		}
 		prob = TMath::Prob(fit_chisq,dof);
 
 		status2 = myFitter2->getStatus();
@@ -229,16 +249,16 @@ int main(int argc,char** argv) //fitter type (1: Minuit, 2: linear, 3: analytic)
 
 		tree->Fill();
 
-		/*
-		   printf("Fit %d (status %d, chisq %lf)\n",event,status,chisq);
-		   printf("True params (chisq %lf), samples:\n",myFitter->memberFCN(par));
-		   myEvent->print();
-		   mySamples->print();
-		   printf("Guessed params (chisq %lf):\n",myFitter->guessChisq());
-		   myFitter->print_guess();
-		   printf("Fitted params:\n");
-		   myFitter->print_fit();
-		   */
+		if (verbose) {
+			//printf("Guessed params (chisq %lf):\n",myFitter->guessChisq());
+			//myFitter->print_guess();
+			printf("1-peak fit: status %d, chisq %lf\n",status,fit_chisq);
+			printf("Fitted params:\n");
+			myFitter->print_fit();
+			printf("2-peak fit: status %d, chisq %lf\n",status2,fit_chisq2);
+			printf("Fitted params:\n");
+			myFitter2->print_fit();
+		}
 
 		if (status == 0 && fit_chisq>true_chisq)
 			status = -1;

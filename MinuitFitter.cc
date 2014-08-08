@@ -10,7 +10,7 @@ MinuitFitter::MinuitFitter(ShapingCurve *sc, int sCount, int pCount, double nois
 {
 	if (gMinuit==NULL) gMinuit = new TMinuit();
 	guess_par = (double *) calloc(2*pCount, sizeof(double));
-	tweakFCN = true;
+	tweakFCN = false;
 }
 
 MinuitFitter::~MinuitFitter()
@@ -31,7 +31,7 @@ void MinuitFitter::doMinuitFit()
 	}
 
 	arglist[0] = 1000;
-	gMinuit->mnexcm("MIGRAD", arglist ,1,ierflg);
+	gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
 	status = ierflg;
 	if (false && status == 0)
 	{
@@ -53,7 +53,7 @@ void MinuitFitter::doMinuitFit()
 			gMinuit->DefineParameter(2*i+1,"height",fit_par[2*i+1],0.05*fit_par[2*i+1],0.0,50.0);
 		}
 		arglist[0] = 1000;
-		gMinuit->mnexcm("MIGRAD", arglist ,1,ierflg);
+		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
 		status = ierflg;
 		if (status == 0)
 		{

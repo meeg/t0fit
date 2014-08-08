@@ -31,6 +31,7 @@ Fitter::~Fitter()
 	free(sigma);
 	free(fit_par);
 	free(fit_err);
+	free(useSample);
 }
 
 void Fitter::print_fit()

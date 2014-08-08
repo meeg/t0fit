@@ -41,20 +41,26 @@ LinFitter::~LinFitter()
 	gsl_vector_free(a_vec);
 	free(fit_t);
 	free(fit_t_err);
+	gsl_eigen_symmv_free(ework);
+	gsl_matrix_free(hess_mat);
+	gsl_matrix_free(evec);
+	gsl_matrix_free(proj_mat);
+	gsl_vector_free(eval);
+	gsl_vector_free(grad);
+	gsl_matrix_free(eig_mat);
 }
 
 void LinFitter::doFit()
 {
 	//doGridFit();
 	//doMinuitFit();
-	//doRecursiveFit();
-	doScanFit();
+	doRecursiveFit();
+	//doScanFit();
 }
 
 double LinFitter::doLinFit(double *times, double *par)
 {
 	int i,j;
-	int status;
 	double t;
 	double norm;
 
@@ -115,7 +121,7 @@ void LinFitter::initMinuit()
 {
 	currentFitter = this;
 	gMinuit->SetFCN(LinFCN);
-	gMinuit->SetPrintLevel(verbose);
+	gMinuit->SetPrintLevel(max(-1,verbose-3));
 	gMinuit->Command("CLE");
 
 	gMinuit->Command("SET NOW");
@@ -131,12 +137,88 @@ void LinFitter::doMinuitFit()
 	{
 		guess_t[j] = sampleInterval*(j);
 	}
+	if (nPeaks==1) {
+		int numUsedSamples = 0;
+		int numPositiveSamples = 0;
+		int numBigSamples = 0;
+		int firstUsedSample = nSamples;
+		int lastUsedSample;
+		int firstBigSample = nSamples;
+		for (int i=0;i<nSamples;i++) if (useSample[i]) {
+			numUsedSamples++;
+			lastUsedSample = i;
+			if (i<firstUsedSample) firstUsedSample = i;
+			if (y[i]>0) {
+				numPositiveSamples++;
+				if (y[i]>3.0*sigma_noise) {
+					numBigSamples++;
+					if (i<firstBigSample) firstBigSample = i;
+				}
+			}
+		}
+		bool made_guess = false;
+		bool made_bestfit = false;
+		if (numUsedSamples==1) {
+			if (useSample[0]) {
+				fit_t[0] = -500.0;
+				made_bestfit = true;
+			} else {
+				fit_t[0] = sampleInterval*(firstUsedSample-0.1);
+				made_bestfit = true;
+			}
+		}
+		else if (numPositiveSamples==1 && y[lastUsedSample]>0) {
+			fit_t[0] = sampleInterval*(lastUsedSample-0.1);
+			made_bestfit = true;
+		}
+		else if (numBigSamples==1 && y[lastUsedSample]>3.0*sigma_noise && useSample[lastUsedSample-1] && y[lastUsedSample-1]<0) {
+			fit_t[0] = sampleInterval*(lastUsedSample-0.1);
+			made_bestfit = true;
+		}
+		else if (numUsedSamples==2) {
+			guess_t[0] = sampleInterval*(firstUsedSample-0.1);
+			made_guess = true;
+		}
+		/*
+		if (!made_bestfit && !made_guess && firstBigSample<nSamples) {
+			if (firstBigSample+1<nSamples && useSample[firstBigSample+1]) {
+				guess_t[0] = sampleInterval*(firstBigSample-0.1);
+			} else {
+				guess_t[0] = sampleInterval*(firstBigSample-1.1);
+			}
+			made_guess = true;
+		}*/
+		/*
+		   else for (int i=0;i<nSamples;i++) if (useSample[i] && y[i]>3.0*sigma_noise) {
+		   if (i>0 && useSample[i-1]) {
+		   if (y[i-1]>0) {
+		   guess_t[0] = sampleInterval*(i-1.1);
+		   } else {
+		   }
+		   }
+		   else
+		   guess_t[0] = sampleInterval*(i-0.1);
+		   made_guess = true;
+		   break;
+		   }*/
+		if (made_bestfit) {
+			if (verbose>1)
+				printf("fit is degenerate; chose a best-fit value: %f\n",fit_t[0]);
+			doLinFit(fit_t,fit_par);
+			return;
+		}
+	}
+	if (verbose>1) {
+		printf("guesses:\t");
+		for (int i=0; i<nPeaks; i++) printf("%f\t",guess_t[i]);
+		printf("\n");
+	}
 	//doGridFit(2);
 	initMinuit();
 	int i;
 	for (i=0; i<nPeaks; i++)
 	{
-		gMinuit->DefineParameter(i,"time",guess_t[i],25.0,0,0);
+		gMinuit->DefineParameter(i,"time",guess_t[i],25.0,-500.0,120.0);
 	}
 
 	arglist[0] = 1000;
@@ -145,42 +227,44 @@ void LinFitter::doMinuitFit()
 	//gMinuit->mnexcm("MINIMIZE", arglist ,1,ierflg);
 
 	status = ierflg;
-	if (nPeaks==2) {
-		double new_fval;
-		double *init_par = new double[nPeaks];
-		double *best_par = new double[nPeaks];
-		getPar(init_par);
-		double best_fval = doLinFit(init_par);
-		if (verbose > 0)
-			printf("Before valley: chisq %f\n",best_fval);
-		memcpy(best_par,init_par,nPeaks*sizeof(double));
+	/*
+	   if (nPeaks==2) {
+	   double new_fval;
+	   double *init_par = new double[nPeaks];
+	   double *best_par = new double[nPeaks];
+	   getPar(init_par);
+	   double best_fval = doLinFit(init_par);
+	   if (verbose > 0)
+	   printf("Before valley: chisq %f\n",best_fval);
+	   memcpy(best_par,init_par,nPeaks*sizeof(double));
 
-		double *move = new double[nPeaks];
-		move[0] = 1.0;
-		for (int i=1;i<nPeaks;i++) move[i] = 0.0;
-		new_fval = valleyImprove(move);
-		if (verbose > 0)
-			printf("Valley right: new chisq %f\n",new_fval);
-		if (new_fval < best_fval) {
-			best_fval = new_fval;
-			getPar(best_par);
-		}
+	   double *move = new double[nPeaks];
+	   move[0] = 1.0;
+	   for (int i=1;i<nPeaks;i++) move[i] = 0.0;
+	   new_fval = valleyImprove(move);
+	   if (verbose > 0)
+	   printf("Valley right: new chisq %f\n",new_fval);
+	   if (new_fval < best_fval) {
+	   best_fval = new_fval;
+	   getPar(best_par);
+	   }
 
-		setPar(init_par);
-		move[0] = -1.0;
-		for (int i=1;i<nPeaks;i++) move[i] = 0.0;
-		new_fval = valleyImprove(move);
-		if (verbose > 0)
-			printf("Valley left: new chisq %f\n",new_fval);
-		if (new_fval < best_fval) {
-			best_fval = new_fval;
-			getPar(best_par);
-		}
-		setPar(best_par);
-		arglist[0] = 1000;
-		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
-		status = ierflg;
-	}
+	   setPar(init_par);
+	   move[0] = -1.0;
+	   for (int i=1;i<nPeaks;i++) move[i] = 0.0;
+	   new_fval = valleyImprove(move);
+	   if (verbose > 0)
+	   printf("Valley left: new chisq %f\n",new_fval);
+	   if (new_fval < best_fval) {
+	   best_fval = new_fval;
+	   getPar(best_par);
+	   }
+	   setPar(best_par);
+	   arglist[0] = 1000;
+	   gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+	   status = ierflg;
+	   }
+	   */
 	if (status == 0)
 	{
 		arglist[0] = 1000;
@@ -197,15 +281,16 @@ void LinFitter::doMinuitFit()
 void LinFitter::doRecursiveFit()
 {
 	if (nPeaks==1) {
-		doGridFit(2);
-		lineScan(0,fit_t[0],5.0);
-		//doMinuitFit();
+		//doGridFit(2);
+		//lineScan(0,fit_t[0],5.0);
+		doMinuitFit();
 		return;
 	}
 
 	double *best_times = NULL;
 	//double *times = new double[nPeaks];
 	double best_fval, fval;
+	int best_split;
 
 	LinFitter *fitter1 = new LinFitter(shape,nSamples,1,sigma_noise);
 	LinFitter *fitter2 = new LinFitter(shape,nSamples,nPeaks-1,sigma_noise);
@@ -214,64 +299,118 @@ void LinFitter::doRecursiveFit()
 	Samples *mySamples = new Samples(6,24.0);
 	mySamples->readEvent(y,startTime);
 	fitter1->readSamples(mySamples);
-	for (int split=0;split<nSamples;split++) {
+	for (int split=1;split<nSamples;split++) {
 		for (int i=0;i<nSamples;i++) {
-			fitter1->setUseSample(i,i<=split);
+			fitter1->setUseSample(i,i<split);
 		}
 		fitter1->doRecursiveFit();
 		fitter1->getFitTimes(fit_t);
 		double *y_sub = new double[nSamples];
+		double total = 0;
+		//int firstBigSample=nSamples-1;
 		for (int i=0;i<nSamples;i++) {
 			y_sub[i] = y[i]-fitter1->getSignal(startTime+i*sampleInterval);
+			total+=y_sub[i];
+			//if (i<firstBigSample && y_sub[i]>sigma_noise) firstBigSample = i;
 		}
-		mySamples->readEvent(y_sub,startTime);
-		fitter2->readSamples(mySamples);
-		for (int i=0;i<nSamples;i++) {
-			fitter2->setUseSample(i,true);
+		if (total>0) {
+			mySamples->readEvent(y_sub,startTime);
+			if (verbose>1) {
+				printf("samples with first peak subtracted:\t");
+				mySamples->print();
+			}
+			fitter2->readSamples(mySamples);
+			for (int i=0;i<nSamples;i++) {
+				fitter2->setUseSample(i,true);
+				//fitter2->setUseSample(i,split-1<=i||firstBigSample<=i);
+			}
+			fitter2->doRecursiveFit();
+			fitter2->getFitTimes(fit_t+1);
 		}
-		fitter2->doRecursiveFit();
-		fitter2->getFitTimes(fit_t+1);
+		delete[] y_sub;
 
-		/*
+		if (verbose>1) {
+			fval = doLinFit(fit_t);
+			printf("split %d, before refit: chisq = %f\n",split,fval);
+			for (int i=0; i<nPeaks; i++) printf("time %d: %f\t",i,fit_t[i]);
+			printf("\n");
+		}
+
 		initMinuit();
 		for (int i=0; i<nPeaks; i++)
 		{
-			gMinuit->DefineParameter(i,"time",fit_t[i],25.0,0,0);
+			gMinuit->DefineParameter(i,"time",fit_t[i],25.0,-500.0,120.0);
 		}
 		arglist[0] = 1000;
 		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+		status = ierflg;
+		if (status == 0)
+		{
+			arglist[0] = 1000;
+			gMinuit->mnexcm("IMPROVE", arglist ,1,ierflg);
+		}
 		getPar(fit_t);
-		*/
 
 		fval = doLinFit(fit_t);
 		if (verbose>1) {
-			printf("%d, %f\n",split,fval);
-			for (int i=0; i<nPeaks; i++) printf("%f\t",fit_t[i]);
+			printf("split %d, after refit: chisq = %f\n",split,fval);
+			for (int i=0; i<nPeaks; i++) printf("time %d: %f\t",i,fit_t[i]);
 			printf("\n");
 		}
 
 		if (best_times == NULL) {
 			best_fval = fval;
+			best_split = split;
 			best_times = new double[nPeaks];
 			memcpy(best_times,fit_t,nPeaks*sizeof(double));
 		} else if (fval<best_fval) {
 			best_fval = fval;
+			best_split = split;
 			memcpy(best_times,fit_t,nPeaks*sizeof(double));
 		}
 	}
 
+	delete fitter1;
+	delete fitter2;
+	delete mySamples;
+
+	if (verbose>1) {
+		printf("Best split: %d, chisq = %f\n",best_split,best_fval);
+		printf("Times:\t\t");
+		for (int i=0;i<nPeaks;i++) printf("%lf\t",best_times[i]);
+		printf("\n");
+	}
+
 	memcpy(fit_t,best_times,nPeaks*sizeof(double));
+	delete[] best_times;
+
 	/*
-		initMinuit();
-		for (int i=0; i<nPeaks; i++)
-		{
-			gMinuit->DefineParameter(i,"time",fit_t[i],25.0,0,0);
-		}
+	initMinuit();
+	for (int i=0; i<nPeaks; i++)
+	{
+		gMinuit->DefineParameter(i,"time",fit_t[i],25.0,-500.0,120.0);
+	}
+	arglist[0] = 1000;
+	gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
+	status = ierflg;
+	if (status == 0)
+	{
 		arglist[0] = 1000;
-		gMinuit->mnexcm("SIMPLEX", arglist ,1,ierflg);
-		getPar(fit_t);
-		*/
-	doLinFit(fit_t,fit_par);
+		gMinuit->mnexcm("IMPROVE", arglist ,1,ierflg);
+	}
+	getPar(fit_t);
+	*/
+
+	fval = doLinFit(fit_t,fit_par);
+
+	/*
+	if (verbose>1) {
+		printf("After refit: chisq = %f\n",fval);
+		printf("Times:\t\t");
+		for (int i=0;i<nPeaks;i++) printf("%lf\t",fit_t[i]);
+		printf("\n");
+	}
+	*/
 }
 
 void LinFitter::plotFit(Event *evt, const char *name)
@@ -410,7 +549,6 @@ void LinFitter::print_guess()
 
 void LinFitter::setVerbosity(int verbosity)
 {
-	gMinuit->SetPrintLevel(verbosity);
 	verbose = verbosity;
 }
 
