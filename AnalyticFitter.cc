@@ -327,7 +327,7 @@ void AnalyticFitter::plotFit(Event *evt, const char *name)
 	free(h);
 
 
-	func = new TF1("curve",evt,&Event::Evaluate,-100.0,200.0,0,"Event");
+	func = new TF1("curve",evt,&Event::Evaluate,-100.0,200.0,0);
 	func->SetLineWidth(1);
 	func->SetNpx(1000);
 	func->DrawCopy("CSAME");
