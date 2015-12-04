@@ -1,11 +1,11 @@
 CPP = g++
-CPPFLAGS = -g -I$(ROOTSYS)/include -I$(ROOTSYS)/include/root
+CPPFLAGS = -g `$(ROOTSYS)/bin/root-config --cflags`
 CXXFLAGS =
 
-ROOTLIBS = `$(ROOTSYS)/bin/root-config --glibs`
+ROOTLIBS = `$(ROOTSYS)/bin/root-config --libs`
 
 LIBS = -lgsl -lgslcblas $(ROOTLIBS) -lMinuit
-SOURCES = apvtime.cc Event.cc ShapingCurve.cc Samples.cc Fitter.cc SmoothShapingCurve.cc LinFitter.cc AnalyticFitter.cc MinuitFitter.cc
+SOURCES = apvtime.cc Event.cc ShapingCurve.cc Samples.cc Fitter.cc SmoothShapingCurve.cc FourPoleShapingCurve.cc LinFitter.cc AnalyticFitter.cc MinuitFitter.cc
 OBJS = $(SOURCES:.cc=.o)
 #DEPS = $(SOURCES:.cpp=.d)
 
